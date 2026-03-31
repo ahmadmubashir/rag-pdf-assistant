@@ -1,0 +1,109 @@
+import streamlit as st
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from pypdf import PdfReader
+import faiss
+import numpy as np
+import torch
+
+st.title("📄 Chat With Your PDF")
+
+# Embedding model
+embed_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+# TinyLlama LLM
+model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+llm_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float32,
+    device_map="auto"
+)
+
+generator = pipeline(
+    "text-generation",
+    model=llm_model,
+    tokenizer=tokenizer,
+    max_new_tokens=50,
+    temperature=0.7
+)
+
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
+
+if uploaded_file:
+
+    reader = PdfReader(uploaded_file)
+
+    lines_data = []
+    metadata = []
+
+    # Extract lines with page and line numbers
+    for page_num, page in enumerate(reader.pages):
+
+        text = page.extract_text()
+
+        if text:
+
+            lines = text.split("\n")
+
+            for line_num, line in enumerate(lines):
+
+                if line.strip():
+
+                    lines_data.append(line)
+
+                    metadata.append({
+                        "page": page_num + 1,
+                        "line": line_num + 1
+                    })
+
+    st.success(f"{len(lines_data)} lines indexed")
+
+    # Create embeddings
+    embeddings = embed_model.encode(lines_data)
+
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(np.array(embeddings))
+
+    query = st.text_input("Ask a question about the PDF")
+
+    if st.button("Ask"):
+
+        query_vector = embed_model.encode([query])
+
+        distances, indices = index.search(np.array(query_vector), k=5)
+
+        context = ""
+
+        st.subheader("📑 Best Matching Lines")
+
+        for i in indices[0]:
+
+            st.write(
+                f"Page {metadata[i]['page']} | Line {metadata[i]['line']} : {lines_data[i]}"
+            )
+
+            context += lines_data[i] + "\n"
+
+        prompt = f"""
+Answer the question using the context below.
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer briefly:
+"""
+
+        result = generator(prompt)
+
+        answer = result[0]["generated_text"]
+
+        st.subheader("🤖 AI Answer")
+
+        st.write(answer)
